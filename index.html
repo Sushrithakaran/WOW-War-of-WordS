@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Type Warrior Online</title>
+    <style>
+        body { margin: 0; background: #111; color: white; font-family: 'Courier New', Courier, monospace; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+        #gameContainer { position: relative; }
+        canvas { background: #222; display: block; border: 2px solid #444; }
+        #ui { position: absolute; top: 15px; left: 20px; right: 20px; font-size: 18px; font-weight: bold; text-shadow: 2px 2px black; display: flex; justify-content: space-between; pointer-events: none; }
+        #startScreen { position: absolute; top: 0; left: 0; width: 800px; height: 500px; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        h1 { color: #ff3333; font-size: 36px; margin: 0 0 10px 0; }
+        #menuSub { font-size: 15px; color: #33aaff; margin: 10px 0; font-weight: bold; text-align: center; }
+        .control-panel { background: #222; padding: 15px; border: 1px solid #444; width: 320px; border-radius: 5px; margin-bottom: 15px; display: flex; flex-direction: column; gap: 12px; }
+        .form-group { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+        input[type="text"] { background: #111; border: 1px solid #ff3333; color: white; padding: 6px; font-family: monospace; width: 140px; }
+        input[type="color"] { background: none; border: none; cursor: pointer; width: 40px; height: 30px; }
+        button { background: #ff3333; color: black; border: none; padding: 10px; font-weight: bold; font-family: monospace; cursor: pointer; font-size: 14px; transition: 0.2s; }
+        button:hover { background: white; box-shadow: 0 0 10px #ff3333; }
+        .instructions { color: #888; font-size: 11px; text-align: center; max-width: 500px; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+    <div id="ui">
+        <div id="myHud" style="color: #33aaff;">YOU - SCORE: <span id="myScore">0</span> | LIVES: <span id="myLives">10</span></div>
+        <div id="oppHud" style="color: #ffaa33;">OPPONENT - SCORE: <span id="oppScore">0</span> | LIVES: <span id="oppLives">10</span></div>
+    </div>
+    <div id="startScreen">
+        <h1 id="menuTitle">ONLINE TYPE WARRIOR</h1>
+        
+        <div class="control-panel" id="setupForm">
+            <div class="form-group">
+                <label>YOUR WARRIOR COLOR:</label>
+                <input type="color" id="colorPicker" value="#33aaff">
+            </div>
+            <div class="form-group">
+                <label>ROOM CODE (OPTIONAL):</label>
+                <input type="text" id="roomInput" placeholder="e.g. battle7">
+            </div>
+            <button onclick="submitConnection()">ENTER ARENA & PRACTICE</button>
+        </div>
+
+        <div id="menuSub">CHOOSE YOUR SKIN COLOR TO INITIATE</div>
+        
+        <div class="instructions">
+            <p>Leave Room Code empty to match randomly online. You will play Solo Practice mode instantly until an opponent links up!</p>
+        </div>
+    </div>
+</div>
+
+<script src="https://socket.io"></script>
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const startScreen = document.getElementById("startScreen");
+const menuTitle = document.getElementById("menuTitle");
+const menuSub = document.getElementById("menuSub");
+const setupForm = document.getElementById("setupForm");
+
+const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? "http://localhost:3000" 
+    : window.location.origin;
+
+const socket = io(BACKEND_URL, {
+    transports: ['polling', 'websocket'],
+    upgrade: true
+});
+
+let gameRunning = false, currentRoomId = null, myRole = 'p1';
+let syncWords = [], enemySpawnIndex = 0, spawnTimer = 0;
+let isSoloMode = true;
+
+const wordList = ["SWORD", "SLASH", "ATTACK", "STRIKE", "WARRIOR", "FIGHT", "BLADE", "NINJA", "COMBO", "DASH", "RUSH", "HERO", "STEEL", "SHADOW"];
+
+const me = { score: 0, lives: 10, x: 120, y: 180, state: "idle", timer: 0, enemies: [], target: null, color: "#33aaff" };
+const opp = { score: 0, lives: 10, x: 120, y: 400, state: "idle", timer: 0, enemies: [], target: null, color: "#ffaa33" };
+
+let audioCtx = null;
+function playSound(type) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    if (type === "type") { osc.frequency.setValueAtTime(550, now); gain.gain.setValueAtTime(0.05, now); osc.start(); osc.stop(now+0.04); }
+    if (type === "slash") { osc.type = "sawtooth"; osc.frequency.setValueAtTime(600, now); osc.frequency.exponentialRampToValueAtTime(100, now+0.1); gain.gain.setValueAtTime(0.1, now); osc.start(); osc.stop(now+0.1); }
+    if (type === "error") { osc.type = "triangle"; osc.frequency.setValueAtTime(110, now); gain.gain.setValueAtTime(0.15, now); osc.start(); osc.stop(now+0.15); }
+}
+
+function submitConnection() {
+    const chosenColor = document.getElementById("colorPicker").value;
+    const roomCode = document.getElementById("roomInput").value;
+    
+    me.color = chosenColor;
+    document.getElementById("myHud").style.color = chosenColor;
+    setupForm.style.display = "none";
+    
+    // Register lobby profile details to cloud backend router
+    socket.emit('join_game', { color: chosenColor, roomName: roomCode, oppColorPrev: chosenColor });
+    startSoloPractice();
+}
+
+socket.on('status', (msg) => { 
+    menuSub.innerText = msg; 
+});
+
+function startSoloPractice() {
+    isSoloMode = true;
+    currentRoomId = null;
+    me.score = 0; me.lives = 10; me.enemies = []; me.target = null;
+    opp.score = 0; opp.lives = 10; opp.enemies = []; opp.target = null;
+    enemySpawnIndex = 0; spawnTimer = 0;
+    
+    startScreen.style.display = "none";
+    
+    if(!gameRunning) {
+        gameRunning = true;
+        triggerLocalSpawn();
+        requestAnimationFrame(gameLoop);
+    }
+}
+
+socket.on('update_opponent_color', (data) => {
+    opp.color = data.color;
+    document.getElementById("oppHud").style.color = data.color;
+});
+
+socket.on('match_found', (data) => {
+    isSoloMode = false;
+    currentRoomId = data.roomId;
+    myRole = data.role;
+    syncWords = data.words;
+    opp.color = data.oppColor;
+    document.getElementById("oppHud").style.color = data.oppColor;
+    
+    me.score = 0; me.lives = 10; me.enemies = []; me.target = null;
+    opp.score = 0; opp.lives = 10; opp.enemies = []; opp.target = null;
+    enemySpawnIndex = 0; spawnTimer = 0;
+    
+    startScreen.style.display = "none";
+    triggerGlobalSpawn();
+});
+
+function triggerLocalSpawn() {
+    const targetWord = wordList[Math.floor(Math.random() * wordList.length)];
+    me.enemies.push({ x: canvas.width + 20, y: me.y, word: targetWord, index: 0, speed: 1.2 });
+    opp.enemies.push({ x: canvas.width + 20, y: opp.y, word: "BOT", index: 0, speed: 0.5 });
+}
+
+function triggerGlobalSpawn() {
+    const targetWord = syncWords[enemySpawnIndex % syncWords.length];
+    enemySpawnIndex++;
+    
+    me.enemies.push({ x: canvas.width + 20, y: me.y, word: targetWord, index: 0, speed: 1.2 });
+    opp.enemies.push({ x: canvas.width + 20, y: opp.y, word: targetWord, index: 0, speed: 1.2 });
+}
+
+window.addEventListener("keydown", (e) => {
+    if (!gameRunning || e.key.length !== 1) return;
+    const key = e.key.toUpperCase();
+
+    if (!me.target) me.target = me.enemies.find(enemy => enemy.word.startsWith(key));
+
+    if (me.target) {
+        if (me.target.word[me.target.index] === key) {
+            me.target.index++;
+            me.state = "attack"; me.timer = 5;
+            playSound("type");
+
+            if (!isSoloMode) {
+                socket.emit('player_action', { roomId: currentRoomId, role: myRole, action: 'type', index: me.target.index });
+            }
+
+            if (me.target.index >= me.target.word.length) {
+                playSound("slash");
+                me.enemies = me.enemies.filter(item => item !== me.target);
+                me.target = null;
+                me.score += 10;
+                
+                if (!isSoloMode) {
+                    socket.emit('player_action', { roomId: currentRoomId, role: myRole, action: 'kill', score: me.score });
+                }
+            }
+        } else { handleLocalMistake(); }
+    } else { handleLocalMistake(); }
+    document.getElementById("myScore").innerText = me.score;
+});
+
+function handleLocalMistake() {
+    playSound("error");
+    me.lives--;
+    document.getElementById("myLives").innerText = me.lives;
+    
+    if (!isSoloMode) {
+        socket.emit('player_action', { roomId: currentRoomId, role: myRole, action: 'mistake', lives: me.lives });
+        if (me.lives <= 0) { socket.emit('game_over_claim', { roomId: currentRoomId, loserRole: myRole, reason: "RAN OUT OF LIVES!" }); }
+    } else {
+        if (me.lives <= 0) {
+            gameRunning = false;
+            startScreen.style.display = "flex";
+            setupForm.style.display = "flex";
+            menuTitle.innerText = "GAME OVER";
+            menuSub.innerText = `You scored ${me.score} in solo practice! Enter details to play again.`;
+        }
+    }
+}
+
+socket.on('opponent_action', (data) => {
+    if (isSoloMode) return;
+    if (data.action === 'type') {
+        opp.state = "attack"; opp.timer = 5;
+        if (opp.enemies.length > 0) opp.enemies[0].index = data.index;
+    }
+    if (data.action === 'kill') {
+        opp.enemies.shift();
+        opp.target = null;
+        opp.score = data.score;
+        document.getElementById("oppScore").innerText = opp.score;
+    }
