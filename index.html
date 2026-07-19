@@ -41,10 +41,10 @@
                 <label>ROOM CODE (OPTIONAL):</label>
                 <input type="text" id="roomInput" placeholder="e.g. battle7">
             </div>
-            <button onclick="submitConnection()">ENTER ARENA & PRACTICE</button>
+            <button onclick="submitConnection()">ENTER ARENA & PLAY</button>
         </div>
 
-        <div id="menuSub">CHOOSE YOUR SKIN COLOR TO INITIATE</div>
+        <div id="menuSub">CONNECTING TO GAME ENGINE CLIENT...</div>
         
         <div class="instructions">
             <p>Leave Room Code empty to match randomly online. You will play Solo Practice mode instantly until an opponent links up!</p>
@@ -98,8 +98,10 @@ function submitConnection() {
     document.getElementById("myHud").style.color = chosenColor;
     setupForm.style.display = "none";
     
-    // Register lobby profile details to cloud backend router
-    socket.emit('join_game', { color: chosenColor, roomName: roomCode, oppColorPrev: chosenColor });
+    // Send join data to server
+    socket.emit('join_game', { color: chosenColor, roomName: roomCode });
+    
+    // Start solo practice immediately so player never gets stuck
     startSoloPractice();
 }
 
@@ -133,8 +135,10 @@ socket.on('match_found', (data) => {
     currentRoomId = data.roomId;
     myRole = data.role;
     syncWords = data.words;
-    opp.color = data.oppColor;
-    document.getElementById("oppHud").style.color = data.oppColor;
+    if(data.oppColor) {
+        opp.color = data.oppColor;
+        document.getElementById("oppHud").style.color = data.oppColor;
+    }
     
     me.score = 0; me.lives = 10; me.enemies = []; me.target = null;
     opp.score = 0; opp.lives = 10; opp.enemies = []; opp.target = null;
@@ -147,7 +151,7 @@ socket.on('match_found', (data) => {
 function triggerLocalSpawn() {
     const targetWord = wordList[Math.floor(Math.random() * wordList.length)];
     me.enemies.push({ x: canvas.width + 20, y: me.y, word: targetWord, index: 0, speed: 1.2 });
-    opp.enemies.push({ x: canvas.width + 20, y: opp.y, word: "BOT", index: 0, speed: 0.5 });
+    opp.enemies.push({ x: canvas.width + 20, y: opp.y, word: "TRAINING_BOT", index: 0, speed: 0.5 });
 }
 
 function triggerGlobalSpawn() {
@@ -203,7 +207,7 @@ function handleLocalMistake() {
             startScreen.style.display = "flex";
             setupForm.style.display = "flex";
             menuTitle.innerText = "GAME OVER";
-            menuSub.innerText = `You scored ${me.score} in solo practice! Enter details to play again.`;
+            menuSub.innerText = `You scored ${me.score} in solo practice! Re-enter choices to continue.`;
         }
     }
 }
@@ -212,11 +216,9 @@ socket.on('opponent_action', (data) => {
     if (isSoloMode) return;
     if (data.action === 'type') {
         opp.state = "attack"; opp.timer = 5;
-        if (opp.enemies.length > 0) opp.enemies[0].index = data.index;
+        if (opp.enemies.length > 0) opp.enemies.index = data.index;
     }
     if (data.action === 'kill') {
         opp.enemies.shift();
         opp.target = null;
         opp.score = data.score;
-        document.getElementById("oppScore").innerText = opp.score;
-    }
