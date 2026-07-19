@@ -15,7 +15,6 @@ app.use(express.static(path.join(__dirname, './')));
 let publicWaitingPlayer = null;
 const wordList = ["SWORD", "SLASH", "ATTACK", "STRIKE", "WARRIOR", "FIGHT", "BLADE", "NINJA", "COMBO", "DASH", "RUSH", "HERO", "STEEL", "SHADOW"];
 
-// Helper to generate uniform text tracks
 function generateSharedWords() {
     const list = [];
     for(let i=0; i<100; i++) {
@@ -27,48 +26,44 @@ function generateSharedWords() {
 io.on('connection', (socket) => {
     console.log(`User Linked: ${socket.id}`);
 
-    // Action handler for joining public or private arenas
     socket.on('join_game', (data) => {
         const playerColor = data.color || "#33aaff";
         const customRoomName = data.roomName ? data.roomName.trim().toLowerCase() : "";
 
-        // CASE 1: Private Room Logic
+        // PRIVATE ROOM MATCHING
         if (customRoomName !== "") {
             const roomId = `private_${customRoomName}`;
             socket.join(roomId);
 
-            // Fetch active sockets inside that room namespace
-            const clients = io.sockets.adapter.rooms.get(roomId);
+            // Safer cross-version method to get active room counts
+            const roomObj = io.sockets.adapter.rooms.get(roomId);
+            const numClients = roomObj ? roomObj.size : 0;
             
-            if (clients && clients.size === 1) {
-                // First player in private lobby: put them in solo/waiting state
-                socket.emit('status', `WAITING FOR FRIEND IN ROOM: ${customRoomName.toUpperCase()}...`);
-            } else if (clients && clients.size === 2) {
-                // Second player arrives: find the first player's ID
+            if (numClients === 1) {
+                socket.emit('status', `ROOM CREATED! SHARE CODE: "${customRoomName.toUpperCase()}" WITH A FRIEND`);
+            } else if (numClients === 2) {
                 let firstPlayerId = null;
-                for (const clientId of clients) {
+                for (const clientId of roomObj) {
                     if (clientId !== socket.id) { firstPlayerId = clientId; break; }
                 }
                 
                 const sharedWords = generateSharedWords();
-                // Match players up immediately
-                io.to(firstPlayerId).emit('match_found', { roomId, role: 'p1', opponentId: socket.id, words: sharedWords, oppColor: playerColor });
-                socket.emit('match_found', { roomId, role: 'p2', opponentId: firstPlayerId, words: sharedWords, oppColor: data.oppColorPrev || "#ffaa33" });
+                io.to(firstPlayerId).emit('match_found', { roomId, role: 'p1', words: sharedWords, oppColor: playerColor });
+                socket.emit('match_found', { roomId, role: 'p2', words: sharedWords, oppColor: "#ffaa33" });
                 
-                // Inform first player of second player's color
+                // Let player 1 know player 2's custom color choice
                 io.to(firstPlayerId).emit('update_opponent_color', { color: playerColor });
             } else {
-                // Room full failsafe fallback
                 socket.leave(roomId);
-                socket.emit('status', 'ROOM IS FULL! CHOOSE ANOTHER NAME.');
+                socket.emit('status', 'ROOM FULL! CHOOSE A DIFFERENT CODE.');
             }
             return;
         }
 
-        // CASE 2: Public Random Queue Matchmaker Logic
+        // PUBLIC MATCHMAKING
         if (!publicWaitingPlayer) {
             publicWaitingPlayer = { socket, color: playerColor };
-            socket.emit('status', 'WAITING FOR PUBLIC OPPONENT...');
+            socket.emit('status', 'SEARCHING FOR A MATCH... ENJOY PRACTICE MODE!');
         } else {
             const opponent = publicWaitingPlayer;
             publicWaitingPlayer = null;
@@ -78,8 +73,8 @@ io.on('connection', (socket) => {
             opponent.socket.join(roomId);
 
             const sharedWords = generateSharedWords();
-            opponent.socket.emit('match_found', { roomId, role: 'p1', opponentId: socket.id, words: sharedWords, oppColor: playerColor });
-            socket.emit('match_found', { roomId, role: 'p2', opponentId: opponent.socket.id, words: sharedWords, oppColor: opponent.color });
+            opponent.socket.emit('match_found', { roomId, role: 'p1', words: sharedWords, oppColor: playerColor });
+            socket.emit('match_found', { roomId, role: 'p2', words: sharedWords, oppColor: opponent.color });
         }
     });
 
@@ -93,7 +88,6 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         if (publicWaitingPlayer && publicWaitingPlayer.socket.id === socket.id) publicWaitingPlayer = null;
-        console.log(`User Disconnected: ${socket.id}`);
     });
 });
 
